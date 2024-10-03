@@ -1,6 +1,6 @@
 import logging
 import time
-from telegram import Update
+from telegram import Update, ParseMode
 from telegram.ext import Updater, CommandHandler, CallbackContext
 from config import BOT_TOKEN, DEFAULT_BATCH_SIZE, DEFAULT_DELAY, SOURCE_CHANNEL, TARGET_CHANNEL
 
@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 # Dictionary to store user settings
 user_settings = {}
+is_forwarding = False  # Flag to indicate if forwarding is in progress
 
 # Command to set batch size
 def set_batch_size(update: Update, context: CallbackContext):
@@ -65,8 +66,17 @@ def set_end_message(update: Update, context: CallbackContext):
     except (IndexError, ValueError):
         update.message.reply_text("Usage: /end <message_id>")
 
+# Command to stop forwarding
+def stop_forwarding(update: Update, context: CallbackContext):
+    global is_forwarding
+    is_forwarding = False
+    update.message.reply_text("Forwarding has been stopped.")
+
 # Forward messages in batches with delay, and within start and end message ID range
 def forward_messages(update: Update, context: CallbackContext):
+    global is_forwarding
+    is_forwarding = True  # Set the flag to indicate forwarding is in progress
+    
     source_channel = user_settings.get('source_channel', SOURCE_CHANNEL)
     target_channel = user_settings.get('target_channel', TARGET_CHANNEL)
     batch_size = user_settings.get('batch_size', DEFAULT_BATCH_SIZE)
@@ -84,16 +94,30 @@ def forward_messages(update: Update, context: CallbackContext):
 
     # Forward messages in the specified range
     total_messages_forwarded = 0
+    total_messages = end_message - start_message + 1
+    
     for message_id in range(start_message, end_message + 1):
+        if not is_forwarding:  # Check if forwarding has been stopped
+            update.message.reply_text("Forwarding has been interrupted.")
+            return
+        
         try:
-            context.bot.forward_message(chat_id=target_channel, from_chat_id=source_channel, message_id=message_id)
+            # Copy the message instead of forwarding it
+            message = context.bot.get_message(chat_id=source_channel, message_id=message_id)
+            context.bot.send_message(chat_id=target_channel, text=message.text, parse_mode=ParseMode.HTML)
+
             total_messages_forwarded += 1
+            
+            # Send progress update
+            update.message.reply_text(f"Forwarded {total_messages_forwarded} of {total_messages} messages. {total_messages - total_messages_forwarded} remaining.")
+            
         except Exception as e:
-            logger.warning(f"Could not forward message {message_id}: {e}")
+            logger.warning(f"Could not copy message {message_id}: {e}")
+
         if total_messages_forwarded % batch_size == 0:
             time.sleep(delay_time)
 
-    update.message.reply_text(f"Forwarded {total_messages_forwarded} messages from message {start_message} to {end_message}.")
+    update.message.reply_text(f"Finished forwarding! A total of {total_messages_forwarded} messages were forwarded.")
 
 # Main function to start the bot
 def main():
@@ -107,6 +131,7 @@ def main():
     dp.add_handler(CommandHandler("start", set_start_message))
     dp.add_handler(CommandHandler("end", set_end_message))
     dp.add_handler(CommandHandler("forward", forward_messages))
+    dp.add_handler(CommandHandler("stop", stop_forwarding))  # Add the stop command
 
     updater.start_polling()
     updater.idle()
